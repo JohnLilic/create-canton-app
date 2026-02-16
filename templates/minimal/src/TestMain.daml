@@ -1,0 +1,104 @@
+module TestMain where
+
+import Daml.Script
+import Main
+
+-- | Test: Issue an asset via proposal acceptance.
+testIssueAsset : Script ()
+testIssueAsset = script do
+  issuer <- allocateParty "Issuer"
+  owner <- allocateParty "Owner"
+
+  proposalCid <- submit issuer do
+    createCmd AssetProposal with
+      issuer
+      owner
+      description = "Gold token"
+      amount = 100.0
+
+  assetCid <- submit owner do
+    exerciseCmd proposalCid AcceptAsset
+
+  Some asset <- queryContractId owner assetCid
+  assert $ asset.amount == 100.0
+  assert $ asset.owner == owner
+
+-- | Test: Transfer an asset to a new owner.
+testTransferAsset : Script ()
+testTransferAsset = script do
+  issuer <- allocateParty "Issuer"
+  owner <- allocateParty "Owner"
+  newOwner <- allocateParty "NewOwner"
+
+  assetCid <- submit issuer do
+    createCmd Asset with
+      issuer
+      owner
+      description = "Token"
+      amount = 50.0
+
+  transferredCid <- submit owner do
+    exerciseCmd assetCid Transfer with
+      newOwner
+
+  Some asset <- queryContractId newOwner transferredCid
+  assert $ asset.owner == newOwner
+  assert $ asset.amount == 50.0
+
+-- | Test: Split an asset into two parts.
+testSplitAsset : Script ()
+testSplitAsset = script do
+  issuer <- allocateParty "Issuer"
+  owner <- allocateParty "Owner"
+
+  assetCid <- submit issuer do
+    createCmd Asset with
+      issuer
+      owner
+      description = "Divisible token"
+      amount = 100.0
+
+  (cid1, cid2) <- submit owner do
+    exerciseCmd assetCid Split with
+      splitAmount = 40.0
+
+  Some part1 <- queryContractId owner cid1
+  Some part2 <- queryContractId owner cid2
+  assert $ part1.amount == 40.0
+  assert $ part2.amount == 60.0
+
+-- | Test: Cannot split with invalid amount.
+testCannotSplitInvalid : Script ()
+testCannotSplitInvalid = script do
+  issuer <- allocateParty "Issuer"
+  owner <- allocateParty "Owner"
+
+  assetCid <- submit issuer do
+    createCmd Asset with
+      issuer
+      owner
+      description = "Token"
+      amount = 100.0
+
+  submitMustFail owner do
+    exerciseCmd assetCid Split with
+      splitAmount = 100.0
+
+-- | Test: Owner rejects a proposal.
+testRejectProposal : Script ()
+testRejectProposal = script do
+  issuer <- allocateParty "Issuer"
+  owner <- allocateParty "Owner"
+
+  proposalCid <- submit issuer do
+    createCmd AssetProposal with
+      issuer
+      owner
+      description = "Unwanted token"
+      amount = 10.0
+
+  submit owner do
+    exerciseCmd proposalCid RejectAsset
+
+  result <- queryContractId owner proposalCid
+  assert $ result == None

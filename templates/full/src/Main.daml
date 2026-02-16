@@ -1,0 +1,71 @@
+-- | Starter asset contract for {{PROJECT_NAME}}.
+module Main where
+
+-- | A simple on-ledger asset.
+template Asset
+  with
+    issuer      : Party
+    owner       : Party
+    description : Text
+    amount      : Decimal
+  where
+    signatory issuer
+    observer owner
+
+    ensure amount > 0.0
+
+    -- | Transfer ownership to another party.
+    choice Transfer : ContractId Asset
+      with
+        newOwner : Party
+      controller owner
+      do
+        create this with
+          owner = newOwner
+
+    -- | Split into two assets of specified amounts.
+    choice Split : (ContractId Asset, ContractId Asset)
+      with
+        splitAmount : Decimal
+      controller owner
+      do
+        assertMsg "Split amount must be positive" $
+          splitAmount > 0.0
+        assertMsg "Split amount must be less than total" $
+          splitAmount < amount
+        cid1 <- create this with amount = splitAmount
+        cid2 <- create this with
+          amount = amount - splitAmount
+        pure (cid1, cid2)
+
+-- | Proposal to issue a new asset. The owner must accept.
+template AssetProposal
+  with
+    issuer      : Party
+    owner       : Party
+    description : Text
+    amount      : Decimal
+  where
+    signatory issuer
+    observer owner
+
+    ensure amount > 0.0
+
+    -- | Owner accepts the proposal, creating the asset.
+    choice AcceptAsset : ContractId Asset
+      controller owner
+      do create Asset with
+           issuer
+           owner
+           description
+           amount
+
+    -- | Owner rejects the proposal.
+    choice RejectAsset : ()
+      controller owner
+      do pure ()
+
+    -- | Issuer withdraws the proposal.
+    choice WithdrawProposal : ()
+      controller issuer
+      do pure ()

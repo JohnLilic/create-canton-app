@@ -1,0 +1,133 @@
+-- | Token vesting pattern with cliff and linear unlock schedule.
+-- Tokens vest over time after an initial cliff period.
+module Patterns.Vesting where
+
+import DA.Time (subTime, convertRelTimeToMicroseconds)
+
+-- | A vesting schedule for tokens granted to a beneficiary.
+-- After the cliff, tokens unlock linearly until fully vested.
+template VestingSchedule
+  with
+    grantor      : Party
+    beneficiary  : Party
+    totalAmount  : Decimal
+    claimedAmount : Decimal
+    startTime    : Time
+    cliffTime    : Time
+    endTime      : Time
+  where
+    signatory grantor
+    observer beneficiary
+
+    ensure totalAmount > 0.0
+      && claimedAmount >= 0.0
+      && claimedAmount <= totalAmount
+      && cliffTime >= startTime
+      && endTime > cliffTime
+
+    -- | Calculate how many tokens have vested at the given time.
+    nonconsuming choice CalculateVested : Decimal
+      with
+        queryTime : Time
+      controller beneficiary
+      do
+        if queryTime < cliffTime then
+          pure 0.0
+        else if queryTime >= endTime then
+          pure totalAmount
+        else do
+          -- Linear vesting between cliff and end
+          let elapsed = subTime queryTime startTime
+          let total = subTime endTime startTime
+          let elapsedMicro = intToDecimal $
+                convertRelTimeToMicroseconds elapsed
+          let totalMicro = intToDecimal $
+                convertRelTimeToMicroseconds total
+          let ratio = elapsedMicro / totalMicro
+          pure $ ratio * totalAmount
+
+    -- | Beneficiary claims vested tokens up to the available amount.
+    choice Claim : ContractId VestingSchedule
+      with
+        claimAmount : Decimal
+      controller beneficiary
+      do
+        now <- getTime
+        vested <-
+          if now < cliffTime then
+            pure 0.0
+          else if now >= endTime then
+            pure totalAmount
+          else do
+            let elapsed = subTime now startTime
+            let total = subTime endTime startTime
+            let elapsedMicro = intToDecimal $
+                  convertRelTimeToMicroseconds elapsed
+            let totalMicro = intToDecimal $
+                  convertRelTimeToMicroseconds total
+            let ratio = elapsedMicro / totalMicro
+            pure $ ratio * totalAmount
+
+        let available = vested - claimedAmount
+        assertMsg "Claim amount exceeds available vested tokens" $
+          claimAmount > 0.0 && claimAmount <= available
+        create this with
+          claimedAmount = claimedAmount + claimAmount
+
+    -- | Grantor revokes the unvested portion (revocable vesting).
+    choice RevokeUnvested : ContractId VestingSchedule
+      controller grantor
+      do
+        now <- getTime
+        assertMsg "Cannot revoke before cliff" $
+          now >= cliffTime
+        vested <-
+          if now >= endTime then
+            pure totalAmount
+          else do
+            let elapsed = subTime now startTime
+            let total = subTime endTime startTime
+            let elapsedMicro = intToDecimal $
+                  convertRelTimeToMicroseconds elapsed
+            let totalMicro = intToDecimal $
+                  convertRelTimeToMicroseconds total
+            let ratio = elapsedMicro / totalMicro
+            pure $ ratio * totalAmount
+
+        assertMsg "Cannot revoke less than already claimed" $
+          vested >= claimedAmount
+        create this with
+          totalAmount = vested
+          endTime = now
+
+-- | Proposal to create a vesting schedule. Beneficiary must accept.
+template VestingProposal
+  with
+    grantor     : Party
+    beneficiary : Party
+    totalAmount : Decimal
+    startTime   : Time
+    cliffTime   : Time
+    endTime     : Time
+  where
+    signatory grantor
+    observer beneficiary
+
+    ensure totalAmount > 0.0
+      && cliffTime >= startTime
+      && endTime > cliffTime
+
+    choice AcceptVesting : ContractId VestingSchedule
+      controller beneficiary
+      do create VestingSchedule with
+           grantor
+           beneficiary
+           totalAmount
+           claimedAmount = 0.0
+           startTime
+           cliffTime
+           endTime
+
+    choice RejectVesting : ()
+      controller beneficiary
+      do pure ()
